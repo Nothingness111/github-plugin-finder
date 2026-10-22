@@ -1,0 +1,3 @@
+- insert:
+    - id: github-plugin-finder
+      name: '@local/github-plugin-finder'
