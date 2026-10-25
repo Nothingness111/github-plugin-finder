@@ -1,17 +1,30 @@
 {
   "name": "@local/github-plugin-finder",
-  "version": "1.1.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
+  "description": "DeepSeek Harness plugin discovery panel: bandwidth-aware GitHub/npm traversal with a persistent index, exact-name resolution, model-backed Chinese translation and star ranking.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg"],
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "scripts": {
+    "test": "node test/run.mjs && node test/client.mjs"
+  },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true
