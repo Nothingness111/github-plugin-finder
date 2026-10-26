@@ -1,9 +1,9 @@
 {
   "name": "@local/github-plugin-finder",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "private": true,
   "type": "module",
-  "description": "DeepSeek Harness plugin discovery panel: bandwidth-aware GitHub/npm traversal with a persistent index, exact-name resolution, model-backed Chinese translation and star ranking.",
+  "description": "DeepSeek Harness plugin discovery panel: bandwidth-aware GitHub/npm traversal with a persistent index, exact-name resolution, weekly star-growth ranking, heuristic privacy tags, model-backed Chinese translation and star ranking.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

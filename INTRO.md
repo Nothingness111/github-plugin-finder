@@ -11,10 +11,14 @@
 - **额度说真话**：GitHub 无令牌 10 次/分钟，令牌 30 次/分钟。面板用令牌桶按配额排队，读 `x-ratelimit-*` 在耗尽前停下，并明确标出「顺延 N 个渠道」，点「深度搜索」再继续。
 - **翻译用模型直译，稳定看到中文**：优先走 DSH 宿主自己的模型服务（和聊天同一条通道，不受第三方翻译站被墙影响），一次把一批简介译成 JSON，失败自动对半重试；这条不通再依次退到 DSH 原生 `translator` 服务、Bing、MyMemory、Google。译文写磁盘缓存，第二次打开不再请求；卡片上标出来源，失败条目标「未翻译」并可重试。
 - **星标排行**：相关度 / 星标从多到少 / 最近更新三种排序，选择会记住；星标模式按单一有序列表展示，不打散到分类里。
+- **本周热门**：索引每次记录星标快照，点「本周热门」直接看 7 天内星标增长 ≥ 50 的插件，按增长量排序；索引还没攒够一周快照时会标注「窗口不足」，不伪造数字。
+- **隐私/权限标签**：发现结果自动扫描仓库简介、README 与 `package.json`，命中识屏、剪贴板、Cookie/浏览器数据、密码/私钥、安装脚本、混淆代码、遥测、外传数据等能力时，在简介下方打标并列出证据。它是**启发式提示，不是安全审计**：没有标不等于安全，有标也要自己判断。
 - **分类浏览**：界面与主题 / MCP 集成 / 自动化与提醒 / 开发与调试 / AI 与智能体 / 实用工具 / 其他。
 - **一键安装**：复制安装请求粘贴回对话，助手先审计再安装；npm 包自动切换成 npm 安装语句。
 
 **架构**：面板是纯客户端；真正的搜索、索引、翻译跑在 DSH 宿主的 `/github-plugin-finder/*` 路由里，因此不受浏览器 CORS 限制，也能用磁盘缓存。宿主路由不可用时（旧安装 / 未重启），面板自动退回浏览器直连模式。
+
+**网络容错**：如果你开着 Steam++、Clash 等本地加速代理，普通 `fetch` 会因证书链校验失败而报一句没头没尾的 `fetch failed`。本插件会自动读取本地 PEM（`NODE_EXTRA_CA_CERTS`、`<data>/extra-ca.pem`、radar 导出的 SteamTools 根）重试，仍失败则首次信任抓取对端证书链再试，并在错误里保留真实原因。
 
 **三步上手**：插件页 → 发现 → 输入名称 / 关键词 / 点「全部浏览」→ 复制安装指令。
 
@@ -29,9 +33,13 @@
 - **Honest quotas**: GitHub allows 10 searches/minute anonymously and 30 with a token. A token bucket paces the plan, `x-ratelimit-*` headers stop it before exhaustion, and deferred channels are reported instead of silently dropped.
 - **Stable Chinese, translated by the model**: the Host's own model service is tried first (the same channel the chat uses, so a filtered third-party translate endpoint cannot break it); one call translates a batch of descriptions as JSON, with an automatic half-batch retry. If that route is unavailable it falls back to the native `translator` service, Bing, MyMemory and Google in that order. Results are cached on disk, the card shows which route produced the Chinese, and failures get a "not translated" badge plus retry.
 - **Star ranking**: relevance / most stars first / recently updated, remembered across sessions; the star view is one ordered list rather than category buckets.
+- **Hot this week**: every index update stores a star snapshot; the "Hot this week" button lists plugins that gained at least 50 stars in the last 7 days, ordered by growth. Rows without a full-week baseline are labelled rather than faked.
+- **Privacy/permission tags**: the panel scans descriptions, READMEs and `package.json` and flags capabilities such as screen capture, clipboard access, cookies/browser data, passwords/private keys, install scripts, obfuscated code, telemetry or data upload, showing the matching evidence under the card. It is a **heuristic hint, not a security audit**: no tag does not mean safe, and a tag does not mean malicious.
 - **Categorized browsing** and one-click install requests, with a manual-copy fallback when the clipboard is unavailable.
 
 **Architecture**: the panel is client-only; search, the index and translation run behind `/github-plugin-finder/*` routes in the DSH host, so there is no CORS limit and the cache survives reloads. If those routes are absent (older install, host not restarted), the panel falls back to direct browser calls.
+
+**TLS interception**: behind a local accelerator/proxy (Steam++, Clash, corporate gateway) a plain `fetch` fails with a bare `fetch failed`. The plugin retries with local PEM files (`NODE_EXTRA_CA_CERTS`, `<data>/extra-ca.pem`, the SteamTools root radar exported) and then, as a last resort, with the certificate chain the server actually presents (trust on first use), keeping the real cause in the error message.
 
 ---
 

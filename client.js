@@ -88,6 +88,16 @@ window.__ModuleLoader__.load({
       'clipboard.fallback': 'Clipboard unavailable — copy manually:',
       'footnote': 'Copy an install request, paste it in the chat, and I will audit and install the plugin.',
       'footnote.catalog': 'Coverage includes the community catalog Blue-Whale-Harness (Apache-2.0).',
+      'hot.button': 'Hot this week',
+      'hot.title': 'Hot this week (≥50 stars in 7 days)',
+      'hot.loading': 'Loading hot list…',
+      'hot.empty': 'No snapshot older than a week yet — search a few more times and come back.',
+      'hot.delta': '7-day +',
+      'hot.estimated': 'partial window',
+      'risk.badge.high': 'Privacy risk',
+      'risk.badge.warn': 'Check permissions',
+      'risk.note': 'heuristic scan',
+      'risk.unknown': 'scan unavailable',
     };
     const ZH = {
       tab: '发现',
@@ -169,6 +179,16 @@ window.__ModuleLoader__.load({
       'clipboard.fallback': '剪贴板不可用，请手动复制：',
       'footnote': '复制安装指令后回到对话粘贴发送，我会先审计再安装。',
       'footnote.catalog': '覆盖范围包含社区目录 Blue-Whale-Harness（Apache-2.0）。',
+      'hot.button': '本周热门',
+      'hot.title': '本周热门（7 天内星标 ≥ 50）',
+      'hot.loading': '正在加载本周热门…',
+      'hot.empty': '索引还没有满 7 天的快照：再多搜几次，一周后再看。',
+      'hot.delta': '本周 +',
+      'hot.estimated': '窗口不足',
+      'risk.badge.high': '隐私风险',
+      'risk.badge.warn': '需留意权限',
+      'risk.note': '启发式扫描',
+      'risk.unknown': '无法扫描',
     };
 
     // ------------------------------------------------- client-side parsing
@@ -215,6 +235,18 @@ window.__ModuleLoader__.load({
       }
       score += Math.log10(1 + (Number(card.stars) || 0)) * 10;
       return score;
+    }
+
+    function locLabel(label) {
+      if (!label) return '';
+      if (typeof label === 'string') return label;
+      let zh = true;
+      try {
+        const snap = window.__ctxLocale && window.__ctxLocale.getLocale ? window.__ctxLocale.getLocale() : null;
+        const id = (snap && (snap.id || snap.locale)) || '';
+        zh = String(id).toLowerCase().indexOf('zh') === 0;
+      } catch (e) { zh = true; }
+      return (zh ? (label.zh || label.en) : (label.en || label.zh)) || '';
     }
 
     // ------------------------------------------------------------ ordering
@@ -535,6 +567,13 @@ window.__ModuleLoader__.load({
 .ghpf-progress{color:var(--dsw-alias-state-warn-primary);}
 .ghpf-foot{color:var(--dsw-alias-label-secondary);line-height:1.6;font-size:12px;}
 .ghpf-list{display:flex;flex-direction:column;gap:8px;margin-top:8px;}
+.ghpf-risk{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;font-size:12px;color:var(--dsw-alias-label-secondary);border-left:3px solid var(--dsw-alias-state-warn-primary);padding-left:8px;}
+.ghpf-risk.high{border-left-color:var(--dsw-alias-state-error-primary);}
+.ghpf-risk-badge{font-size:11px;font-weight:600;padding:1px 8px;border-radius:999px;border:1px solid var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary);}
+.ghpf-risk.high .ghpf-risk-badge{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary);}
+.ghpf-risk-note{font-size:11px;opacity:.75;}
+.ghpf-growth{color:var(--dsw-alias-state-success-primary);font-weight:600;}
+.ghpf-hot-empty{color:var(--dsw-alias-label-secondary);}
 `;
 
     // ------------------------------------------------------------ panel UI
@@ -566,6 +605,11 @@ window.__ModuleLoader__.load({
       const [visible, setVisible] = React.useState(150);
       const [rounds, setRounds] = React.useState(0);
       const [translateRoutes, setTranslateRoutes] = React.useState([]);
+      const [hot, setHot] = React.useState(null);
+      const [hotLoading, setHotLoading] = React.useState(false);
+      const [risks, setRisks] = React.useState({});
+      const scansRef = React.useRef(new Set());
+      const scanBlockedRef = React.useRef(false);
       const translatedRef = React.useRef(new Set());
       const seq = React.useRef(0);
 
@@ -688,6 +732,48 @@ window.__ModuleLoader__.load({
         await Promise.all([worker(), worker(), worker()]);
       }
 
+      /** Weekly hot list: growth comes from the host index's own snapshots. */
+      async function loadHot() {
+        if (hotLoading) return;
+        if (engine !== 'host') {
+          setHot({ ok: false, error: t('status.engine.hint.direct') });
+          return;
+        }
+        setHotLoading(true);
+        try {
+          const { data: body } = await hostCall('/hot', { minGrowth: 50, windowDays: 7, limit: 100 }, 45000);
+          setHot(body);
+          if (body && body.ok && body.items) void scanRepos(body.items);
+        } catch (e) {
+          setHot({ ok: false, error: String((e && e.message) || e) });
+        } finally {
+          setHotLoading(false);
+        }
+      }
+
+      /** Ask the host to scan the privacy-relevant capabilities of visible cards. */
+      async function scanRepos(cards) {
+        if (engine !== 'host' || scanBlockedRef.current) return;
+        const need = [];
+        for (const card of cards || []) {
+          const name = card && card.full_name;
+          if (!name || String(name).indexOf('npm:') === 0 || risks[name] || scansRef.current.has(name)) continue;
+          scansRef.current.add(name);
+          need.push({ name: name, hint: card.desc || '' });
+          if (need.length >= 12) break;
+        }
+        if (!need.length) return;
+        try {
+          const { data: body } = await hostCall('/scan', { repos: need }, 60000);
+          if (body && body.results) setRisks(function (prev) { return Object.assign({}, prev, body.results); });
+          if (body && body.aborted) scanBlockedRef.current = true;
+        } catch (e) {
+          // Scanning is a nicety: a failure must never disturb the result list.
+        } finally {
+          for (const entry of need) scansRef.current.delete(entry.name);
+        }
+      }
+
       async function runSearch(depth) {
         const mySeq = ++seq.current;
         const trimmed = query.trim();
@@ -748,6 +834,7 @@ window.__ModuleLoader__.load({
             payload = round === 1 ? body : mergePayload(payload, body);
             setRounds(round);
             setData(payload);
+            void scanRepos([payload.exact].concat(payload.items || []).filter(Boolean));
             // Translate what we have right away: the user reads Chinese from the
             // first round while the following rounds keep filling the list. The
             // ref above keeps this from re-asking for descriptions already sent.
@@ -796,6 +883,15 @@ window.__ModuleLoader__.load({
         const showZh = zhOn && translated && translated.zh;
         const fallback = copied === '!fallback!' + card.full_name;
         const sourceBadge = card.seedOnly ? h('span', { className: 'ghpf-badge' }, t('card.seed')) : null;
+        const risk = risks[card.full_name];
+        const riskNode = risk && (risk.level === 'high' || risk.level === 'warn')
+          ? h('div', { className: 'ghpf-risk ' + (risk.level === 'high' ? 'high' : 'warn') },
+              h('span', { className: 'ghpf-risk-badge' }, risk.level === 'high' ? t('risk.badge.high') : t('risk.badge.warn')),
+              h('span', { className: 'ghpf-risk-detail' }, (risk.findings || []).slice(0, 3).map(function (finding) {
+                return locLabel(finding.label);
+              }).join('、')),
+              h('span', { className: 'ghpf-risk-note' }, t('risk.note')))
+          : null;
         return h('article', { key: card.full_name, className: 'ghpf-card' },
           h('div', { className: 'ghpf-title' },
             h('a', { href: card.url || ('https://github.com/' + card.full_name), target: '_blank', rel: 'noreferrer' }, card.full_name),
@@ -810,8 +906,12 @@ window.__ModuleLoader__.load({
                 ? h('span', { className: 'ghpf-badge warn', style: { marginLeft: '6px' } }, t('card.untranslated'))
                 : null)
             : h('p', { className: 'ghpf-desc ghpf-nodesc' }, t('card.noDesc')),
+          riskNode,
           h('div', { className: 'ghpf-meta' },
             h('span', null, t('card.stars') + ' ' + String(card.stars || 0)),
+            card.growth && card.growth.delta > 0
+              ? h('span', { className: 'ghpf-growth' }, t('hot.delta') + String(card.growth.delta) + (card.growth.estimated ? ' (' + t('hot.estimated') + ')' : ''))
+              : null,
             h('span', null, t('card.updated') + ' ' + (card.updated ? String(new Date(card.updated).toLocaleDateString()) : '-')),
             showZh && translated.provider ? h('span', null, t('trans.by') + ' ' + translated.provider) : null),
           (card.topics && card.topics.length)
@@ -907,6 +1007,12 @@ window.__ModuleLoader__.load({
               onClick: function () { chooseSort(key); },
             }, t('sort.' + key));
           })),
+        h('div', { className: 'ghpf-modes' },
+          h('button', {
+            type: 'button', className: 'ghpf-chip', 'aria-pressed': String(Boolean(hot)),
+            onClick: loadHot,
+          }, hotLoading ? t('hot.loading') : t('hot.button')),
+          hot && hot.ok ? h('span', { className: 'ghpf-hint' }, t('hot.title') + '（' + String((hot.items || []).length) + '）') : null),
         showOptions ? h('div', { className: 'ghpf-options' },
           h('label', null, t('token.label'),
             h('input', {
@@ -954,6 +1060,14 @@ window.__ModuleLoader__.load({
           }, zhOn ? t('trans.toggle.on') : t('trans.toggle.off'))),
         meta && meta.warnings && meta.warnings.length ? h('p', { className: 'ghpf-foot' },
           (meta.warnings.length > 2 ? meta.warnings.slice(0, 2).concat(['…']) : meta.warnings).join(' · ')) : null,
+        hot ? h('section', { key: 'hot' },
+          hot.ok
+            ? (hot.items && hot.items.length
+                ? h('div', { className: 'ghpf-list' }, hot.items.slice(0, 60).map(function (card) {
+                    return cardNode(Object.assign({}, card, { category: classifyClient(card) }), {});
+                  }))
+                : h('p', { className: 'ghpf-hot-empty' }, t('hot.empty')))
+            : h('p', { className: 'ghpf-hot-empty' }, t('status.error') + ' ' + String(hot.error || ''))) : null,
         data && data.exact ? h('div', { className: 'ghpf-exact' },
           h('div', { className: 'ghpf-exact-title' }, t('exact.hit')),
           cardNode(data.exact, { exact: true })) : null,

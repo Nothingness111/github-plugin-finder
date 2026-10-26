@@ -81,5 +81,15 @@
   "trans.route.dsh": "DSH service",
   "trans.route.bing": "Bing",
   "trans.route.mymemory": "MyMemory",
-  "trans.route.google": "Google"
+  "trans.route.google": "Google",
+  "hot.button": "Hot this week",
+  "hot.title": "Hot this week (≥50 stars in 7 days)",
+  "hot.loading": "Loading hot list…",
+  "hot.empty": "No snapshot older than a week yet — search a few more times and come back.",
+  "hot.delta": "7-day +",
+  "hot.estimated": "partial window",
+  "risk.badge.high": "Privacy risk",
+  "risk.badge.warn": "Check permissions",
+  "risk.note": "heuristic scan",
+  "risk.unknown": "scan unavailable"
 }
